@@ -12,7 +12,7 @@ from __future__ import annotations
 from ..engine import channel_metrics
 from ..extpoints import COLUMNS
 
-DEFAULT_THRESHOLD = 0.5  # В
+DEFAULT_THRESHOLD = 6  # В
 
 
 def threshold() -> float:
@@ -30,7 +30,7 @@ def antenna_verdict(result, channel: str):
     if amp is None or (isinstance(amp, float) and amp != amp):
         return ""
     thr = threshold()
-    return "Годна" if amp >= thr else f"Брак (<{thr:g} В)"
+    return "Годна" if amp > 8 else ("нормальная" if amp >= 6 else ("слабая" if amp >= 5 else "плохая"))
 
 
 COLUMNS.add("antenna_verdict", antenna_verdict, source="runtime",
