@@ -39,6 +39,12 @@ def main() -> int:
     logging.getLogger("signals").addHandler(handler)
 
     window.show()
+
+    from signals.app_qt.onboarding import WelcomeDialog, should_show_onboarding
+    if should_show_onboarding():
+        from PyQt6.QtCore import QTimer
+        QTimer.singleShot(400, lambda: WelcomeDialog(window).run())
+
     return app.exec()
 
 

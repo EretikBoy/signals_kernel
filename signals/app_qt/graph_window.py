@@ -4,14 +4,17 @@ signals.app_qt.graph_window
 
 Окно настройки измерения и графиков (восстановление + переработка оригинала):
 
-* Три графика ОДНОВРЕМЕННО: исходные сигналы со «стробом» анализируемого окна,
-  сглаженные, АЧХ с маркерами (резонанс, 0.707, пороговый уровень) — не нужно
-  прыгать между режимами.
-* ЖИВОЙ предпросмотр: любое изменение поля сразу перерисовывает графики (оси
-  автоподстраиваются), но работает с РАБОЧЕЙ КОПИЕЙ параметров.
-* Кнопка «Применить» фиксирует параметры в измерении (и обновляет дерево);
-  «Сбросить» возвращает к сохранённым; закрытие без «Применить» НЕ меняет данные —
-  именно ради этого кнопка и нужна.
+* Сразу три графика рядом: исходные сигналы со «стробом» анализируемого окна,
+  сглаженные, и АЧХ с маркерами (резонанс, уровень 0.707, пороговый уровень) —
+  не нужно переключаться между режимами, чтобы увидеть всю картину целиком.
+* Предпросмотр живой: меняете любое поле — графики тут же перерисовываются и
+  оси сами подстраиваются под новые данные. При этом правки идут в копию
+  параметров, а не в само измерение, — поэтому можно свободно крутить значения
+  и смотреть, что получится, не боясь испортить сохранённые данные.
+* «Применить» переносит эти изменения в измерение по-настоящему (и обновляет
+  дерево); «Сбросить» откатывает к тому, что было сохранено; а если просто
+  закрыть окно — ничего не изменится. Собственно ради этой страховки кнопки
+  и существуют отдельно от автоматической перерисовки.
 * Немодальное плавающее окно: можно открыть несколько и сравнивать.
 * Каждое поле снабжено подсказкой о назначении.
 """
@@ -22,18 +25,21 @@ from dataclasses import replace
 import matplotlib
 matplotlib.use("QtAgg")
 import numpy as np
-from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg, NavigationToolbar2QT
+from matplotlib.backends.backend_qt import NavigationToolbar2QT
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
 from matplotlib.patches import Rectangle
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
-    QComboBox, QDoubleSpinBox, QGridLayout, QGroupBox, QHBoxLayout, QLabel,
-    QLineEdit, QPushButton, QTextEdit, QVBoxLayout, QWidget,
+    QApplication, QComboBox, QDoubleSpinBox, QGridLayout, QGroupBox, QHBoxLayout,
+    QLabel, QLineEdit, QPushButton, QTextEdit, QVBoxLayout, QWidget,
 )
 
 from ..domain import Analysis
 from ..engine import analyze, channel_metrics, frequency_forecast
 from ..extpoints import EDGE_STRATEGIES
+from ..services.clipboard_data import parse_clipboard_table
+from .curve_interactor import CurveInteractor, ImportWizardPopup
 
 
 def _spin(value, lo, hi, step, decimals, tip) -> QDoubleSpinBox:
@@ -136,6 +142,14 @@ class GraphWindow(QWidget):
         self.ax1 = self.figure.add_subplot(311)
         self.ax2 = self.figure.add_subplot(312)
         self.ax3 = self.figure.add_subplot(313)
+        self.gw_status = QLabel("ЛКМ по кривой АЧХ — выделить, Ctrl+C — копировать; "
+                                "Ctrl+V — вставить кривую из Excel.")
+        self.gw_status.setStyleSheet("color: gray;"); center.addWidget(self.gw_status)
+        self._imports: list[dict] = []
+        self.interactor = CurveInteractor(
+            self.canvas, self.ax3, self, decimal_getter=lambda: ",",
+            on_status=self.gw_status.setText, on_paste=self._paste_overlay)
+        self.wizard = ImportWizardPopup(self, self._wizard_change)
 
         # ПРАВО: параметры и прогноз
         right = QVBoxLayout()
@@ -245,8 +259,10 @@ class GraphWindow(QWidget):
         # АЧХ + маркеры
         ch = work.selected_channel
         amp = res.amplitude.get(ch, np.array([]))
+        self.interactor.ax = self.ax3; self.interactor.clear()
         if amp.size and res.freqs.size:
-            self.ax3.plot(res.freqs, amp, color="red", label=ch)
+            achx_line, = self.ax3.plot(res.freqs, amp, color="red", label=ch)
+            self.interactor.add(ch or "АЧХ", res.freqs, amp, achx_line)
             m = channel_metrics(res, ch, work.params.fixedlevel)
             if m:
                 self.ax3.axvline(m["resonance_frequency"], color="green", linestyle="--",
@@ -255,6 +271,10 @@ class GraphWindow(QWidget):
                                  label="0.707")
                 self.ax3.axhline(work.params.fixedlevel, color="orange", linestyle="--",
                                  label=f"Уровень {work.params.fixedlevel:.2f}")
+        for imp in self._imports:                       # вставленные из Excel наложения
+            ln, = self.ax3.plot(imp["x"], imp["y"], linestyle="--", linewidth=1.2,
+                                label=imp["name"])
+            self.interactor.add(imp["name"], imp["x"], imp["y"], ln)
 
         for ax, title, xl, yl in (
             (self.ax1, "Исходные сигналы", "Время, с", "Напряжение, В"),
@@ -265,6 +285,33 @@ class GraphWindow(QWidget):
             ax.grid(True, alpha=0.3); ax.legend(loc="upper right", fontsize="small")
         self.figure.tight_layout(pad=1.5)
         self.canvas.draw_idle()
+
+    def _paste_overlay(self) -> None:
+        text = QApplication.clipboard().text()
+        r = parse_clipboard_table(text)
+        if not r.ok:
+            self.gw_status.setText("Буфер пуст или не разобрался: " + "; ".join(r.info)); return
+        self._last_clip = text
+        self._imports.append({"name": f"Импорт {len(self._imports) + 1}", "x": r.x, "y": r.y})
+        self._preview()
+        if self.interactor.curves:
+            self.interactor.select(self.interactor.curves[-1])
+        self.wizard.popup_at(self.width() - 380, 64)
+        self._wizard_feedback(r)
+
+    def _wizard_change(self, decimal, swap, transpose) -> None:
+        if not self._imports:
+            return
+        r = parse_clipboard_table(getattr(self, "_last_clip", ""), swap_xy=swap,
+                                  transpose=transpose, decimal=decimal)
+        if r.ok:
+            self._imports[-1]["x"], self._imports[-1]["y"] = r.x, r.y
+            self._preview()
+        self._wizard_feedback(r)
+
+    def _wizard_feedback(self, r) -> None:
+        pv = "\n".join(f"{x:g} → {y:g}" for x, y in zip(r.x[:3], r.y[:3]))
+        self.wizard.set_feedback(f"{r.x.size} точек: " + "; ".join(r.info), pv)
 
     def _update_params(self, work: Analysis) -> None:
         ch = work.selected_channel
@@ -294,6 +341,6 @@ class GraphWindow(QWidget):
             f"Центр: {(lo + hi) / 2:.2f} Гц"
         )
 
-    def closeEvent(self, event) -> None:
+    def closeEvent(self, a0) -> None:
         self.closed.emit(self)
-        super().closeEvent(event)
+        super().closeEvent(a0)

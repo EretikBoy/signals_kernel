@@ -29,6 +29,8 @@ _ALLOWED_NODES = (
     ast.BinOp, ast.UnaryOp, ast.Add, ast.Sub, ast.Mult, ast.Div, ast.Pow,
     ast.USub, ast.UAdd, ast.Mod, ast.Subscript, ast.Index, ast.Slice,
     ast.Tuple, ast.List,
+    ast.Compare, ast.Gt, ast.Lt, ast.GtE, ast.LtE, ast.Eq, ast.NotEq,
+    ast.BoolOp, ast.And, ast.Or, ast.IfExp, ast.keyword,
 )
 
 
@@ -52,6 +54,13 @@ def compile_expression(expr: str) -> Callable[[AnalysisResult, str], Any]:
         return eval(code, {"__builtins__": {}}, names)  # noqa: S307 — песочница выше
 
     return evaluate
+
+
+def compile_safe(expr: str):
+    """Скомпилировать произвольное выражение в песочнице (для своих формул над кривыми)."""
+    tree = ast.parse(expr, mode="eval")
+    _check_safe(tree)
+    return compile(tree, "<user-expression>", "eval")
 
 
 def register_user_column(key: str, label: str, expr: str, *, unit: str = "") -> None:

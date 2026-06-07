@@ -3,9 +3,11 @@ signals.app_qt.instrument_panel
 ==============================
 
 Управление приборами — три отдельные группы (Генератор / Осциллограф /
-Управление). Списки приборов заполняются РЕАЛЬНЫМ сканированием системы
-(VISA *IDN? + USB-поиск Hantek) — вручную ресурс вводить не нужно. «Обновить
-список приборов» пишет в журнал всё найденное и его ответы (для фингерпринтов).
+Управление). Списки приборов не нужно заполнять руками: панель сама
+сканирует систему (опрашивает VISA через *IDN? и ищет Hantek по USB) и
+показывает то, что реально нашлось. Кнопка «Обновить список приборов»
+заодно пишет в журнал всё найденное вместе с ответами приборов — это
+помогает понять, какой именно прибор откликнулся, если их несколько.
 
 Кнопки цветные и динамические. Параметры генератора запоминаются между запусками.
 """
@@ -53,6 +55,7 @@ def _spin(value, lo, hi, decimals=2):
 class InstrumentPanel(QWidget):
     captured = pyqtSignal(object, object)      # (channels: dict, SweepConfig | None)
     log = pyqtSignal(str)
+    devices_changed = pyqtSignal()             # список приборов обновлён (для обучения)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -144,6 +147,7 @@ class InstrumentPanel(QWidget):
         self._fill_combo(self.generator_combo, gens)
         self._fill_combo(self.oscilloscope_combo, oscs)
         self.status.setText(f"Найдено: осциллографов {len(oscs)}, генераторов {len(gens)}")
+        self.devices_changed.emit()
 
     @staticmethod
     def _fill_combo(combo: QComboBox, devices: list) -> None:
@@ -157,10 +161,10 @@ class InstrumentPanel(QWidget):
             if idx >= 0:
                 combo.setCurrentIndex(idx)
 
-    def _osc(self):
+    def _osc(self) -> tuple[str, str] | tuple[None, None]:
         return self.oscilloscope_combo.currentData() or (None, None)
 
-    def _gen(self):
+    def _gen(self) -> tuple[str, str] | tuple[None, None]:
         return self.generator_combo.currentData() or (None, None)
 
     def _sweep_cfg(self) -> SweepConfig:
@@ -186,9 +190,9 @@ class InstrumentPanel(QWidget):
     # ---- действия ----------------------------------------------------------
     def measure(self) -> None:
         osc_kind, osc_res = self._osc(); gen_kind, gen_res = self._gen()
-        if not osc_kind:
+        if not osc_kind or not osc_res:
             self.log.emit("Осциллограф не выбран — обновите список приборов"); return
-        if not gen_kind:
+        if not gen_kind or not gen_res:
             self.log.emit("Генератор не выбран — обновите список приборов"); return
         cfg = self._sweep_cfg()
         if cfg.end_freq <= cfg.start_freq or cfg.sweep_time <= 0:
@@ -203,7 +207,7 @@ class InstrumentPanel(QWidget):
 
     def read(self) -> None:
         osc_kind, osc_res = self._osc()
-        if not osc_kind:
+        if not osc_kind or not osc_res:
             self.log.emit("Осциллограф не выбран — обновите список приборов"); return
         self._worker = ReadWorker(osc_kind, osc_res)
         self._worker.log.connect(self.log.emit)

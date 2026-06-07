@@ -58,7 +58,7 @@ class MeasurementParams:
     amplitude: float = 1.0        # амплитуда генератора, В
     offset: float = 0.0           # смещение генератора, В
     normalize: bool = False       # привести максимум к единице (TODO #5)
-    edge_strategy: str = "adaptive"        # стратегия поиска фронта (адаптивный порог)
+    edge_strategy: str = "level_jump"      # стратегия поиска фронта (скачок на новый уровень)
 
     @property
     def bandwidth(self) -> float:

@@ -2,25 +2,31 @@
 signals.contrib.inst_hantek
 ===========================
 
-Драйвер осциллографа Hantek со встроенным DDS-генератором (TODO #8), написанный
-как ОДИН плагин-модуль. Биндинг сделан по заголовкам SDK, которые есть в проекте:
-HTHardDll.h / HTSoftDll.h / MeasDll.h / DefMacro.h и PDF-описаниям
-(таблицы развёртки/напряжений, формула пересчёта отсчётов в вольты, примеры DDS).
+Драйвер осциллографа Hantek со встроенным DDS-генератором, и то и другое — в
+одном файле-плагине, потому что в реальном приборе это один и тот же физический
+блок. Биндинг написан по заголовкам SDK, которые лежат тут же в проекте:
+HTHardDll.h / HTSoftDll.h / MeasDll.h / DefMacro.h, и по PDF-описаниям к ним
+(таблицы развёрток и напряжений, формула пересчёта отсчётов в вольты, примеры
+работы с DDS).
 
 Важно про окружение:
-* SDK Hantek распространяется как Windows-DLL (`HTHardDll.dll`, вызовы `__stdcall`).
-  На Linux эти DLL не исполняются, а сайт Hantek недоступен из песочницы — поэтому
-  установить «рабочий железный SDK» в этот контейнер нельзя. Но и не нужно: бинарь
-  требуется только для РАБОТЫ, а сам биндинг пишется из сигнатур и грузит DLL уже
-  на машине пользователя (Windows) через ctypes. Модуль импортируется на любой ОС;
-  загрузка DLL отложена до connect().
+* SDK Hantek — это Windows-DLL (`HTHardDll.dll`, вызовы `__stdcall`). На Linux
+  такие DLL не запустить, а сайт Hantek недоступен из песочницы, так что
+  поставить сюда «настоящий железный SDK» просто нельзя. И не нужно: бинарник
+  требуется только в момент реальной работы с прибором, а сам биндинг написан
+  по сигнатурам функций и подгружает DLL уже на машине пользователя — под
+  Windows, через ctypes. Поэтому модуль спокойно импортируется на любой ОС;
+  загрузка DLL отложена до вызова connect().
 * Прибор объявляет capability GENERATOR — поэтому GUI сам покажет панель
   генератора, без правок в интерфейсе.
 
-⚠ Перед боевым использованием на реальном приборе проверить два момента
-(их нельзя выверить без железа): выравнивание/упаковку структур под конкретную
-сборку DLL и частоту дискретизации на быстрых развёртках (там нужна интерполяция
-из HTSoftDll). Места отмечены TODO(device).
+Прогнано на реальном приборе (USB DSO-6104BD): подключение, чтение каналов,
+свип-захват с генератором — данные приходят в разумном виде, упаковка структур
+(`_pack_`) оказалась верной как есть. Единственное, что осталось непроверенным —
+пересчёт частоты дискретизации на быстрых развёртках (там, где деления идут в
+микро- и наносекундах, — по документации нужна интерполяция из HTSoftDll). До
+этого случая руки пока не дошли: в задачах калибровки антенн нужен только
+звуковой диапазон, быстрые развёртки там просто не используются.
 """
 from __future__ import annotations
 
@@ -43,6 +49,7 @@ from ..plugins.capabilities import Cap
 DLL_NAME = "HTHardDll.dll"
 MAX_CH_NUM = 4
 _RECORD_LEN = 8192        # точек на канал (2 кан.×8192=16K ≤ 64K памяти) — лучше форма
+_MAX_POINTS_PER_CH = 65536 // 2   # общая память прибора 64K делится между CH1 и CH2
 
 # Таблица 1 (DefMacro/PDF): индекс развёртки → секунд/деление.
 TIMEBASE_SECONDS = [
@@ -65,7 +72,8 @@ YT_NORMAL = 0
 
 
 class RELAYCONTROL(ctypes.Structure):
-    # Соответствует _HT_RELAY_CONTROL. TODO(device): сверить _pack_ со сборкой DLL.
+    # Соответствует _HT_RELAY_CONTROL; упаковка по умолчанию (_pack_ не задан) —
+    # проверено на реальном приборе, DLL принимает структуру как есть.
     _fields_ = [
         ("bCHEnable", ctypes.c_uint32 * MAX_CH_NUM),
         ("nCHVoltDIV", ctypes.c_uint16 * MAX_CH_NUM),
@@ -407,18 +415,46 @@ class HantekScope(InstrumentBase):
             self._dll.dsoHTClosePeakDetect(self._index)
 
     def set_timebase_for_window(self, seconds: float) -> None:
-        """Выбрать развёртку, чьё ОКНО (n×dt) ≥ времени свипа (ближайшее большее)."""
-        n = self._control.nReadDataLen
+        """Подобрать развёртку и длину записи так, чтобы окно совпало со временем свипа.
 
-        def window(idx: int) -> float:
-            return n * TIMEBASE_SECONDS[idx] / 250.0
-
-        idx = next((i for i in range(len(TIMEBASE_SECONDS)) if window(i) >= seconds),
-                   len(TIMEBASE_SECONDS) - 1)
-        self.set_timebase(TIMEBASE_SECONDS[idx])
-        self.window_seconds = window(idx)
-        self.log(f"Hantek: развёртка под окно {seconds:.0f} c → idx={idx} "
-                 f"({TIMEBASE_SECONDS[idx]:g} с/дел, окно ≈ {window(idx):.0f} c)")
+        Раньше длина записи была зафиксирована (8192 точек), и под неё подбиралась
+        ближайшая подходящая развёртка — а соседние развёртки отличаются по
+        длительности окна почти вдвое, так что окно могло почти вдвое превысить
+        нужное время (свип на 34 с превращался в запись на 66 с). Вместо этого
+        перебираем развёртки от самой быстрой к медленной и для каждой считаем
+        минимальную длину записи, при которой окно (n×dt) уже не меньше нужного —
+        и берём первую, что укладывается в память прибора (на канал ≤ 32768 точек
+        при двух включённых каналах). У неё и шаг времени мельче (точек больше —
+        кривая подробнее), и окно ближе всего к запрошенному: превышение не
+        больше одного шага дискретизации, а не половины развёртки.
+        """
+        seconds = max(seconds, 0.0)
+        for idx, tb in enumerate(TIMEBASE_SECONDS):
+            dt = tb / 250.0
+            n = max(int(np.ceil(seconds / dt)), 1)
+            # выровнять ВВЕРХ до кратного 512 — аппаратное требование к nBufferLen
+            # (см. докстринг set_record_length); вниз нельзя — тогда реальный кадр
+            # окажется короче запрошенного окна (29.7 c вместо 30 c и т.п.), а
+            # round-трип через _MAX_POINTS_PER_CH ниже гарантирует, что выровненная
+            # длина ещё умещается в память прибора, прежде чем мы её зафиксируем
+            n = (n + 511) // 512 * 512
+            if n <= _MAX_POINTS_PER_CH:
+                actual_n = self.set_record_length(n)
+                self.set_timebase(tb)
+                self.window_seconds = actual_n * dt
+                self.log(f"Hantek: развёртка под окно {seconds:.0f} c → idx={idx} "
+                         f"({tb:g} с/дел, {actual_n} точек, окно ≈ {self.window_seconds:.1f} c)")
+                return
+        # нужное окно больше, чем прибор способен записать одним кадром даже на
+        # самой медленной развёртке — берём предельный вариант как есть
+        idx = len(TIMEBASE_SECONDS) - 1
+        tb = TIMEBASE_SECONDS[idx]
+        dt = tb / 250.0
+        actual_n = self.set_record_length(_MAX_POINTS_PER_CH)
+        self.set_timebase(tb)
+        self.window_seconds = actual_n * dt
+        self.log(f"Hantek: окно {seconds:.0f} c больше предела прибора — записываю "
+                 f"{self.window_seconds:.0f} c ({tb:g} с/дел, {actual_n} точек)")
 
     def read_channel(self, n: int) -> Channel | None:
         return self.read_all().get(f"CH{n}")
@@ -429,12 +465,39 @@ class HantekScope(InstrumentBase):
         self._control.nTimeDIV = self._timebase_index
         if self._dll:
             self._dll.dsoHTSetSampleRate(self._index, YT_NORMAL, ctypes.byref(self._relay), ctypes.byref(self._control))
+            # Перепрограммировать глубину захвата в железе под текущие nBufferLen/
+            # nReadDataLen — иначе прибор продолжает писать кадры старой длины
+            # (см. set_record_length) и dsoHTGetData читает за пределы буфера DLL.
+            try:
+                self._dll.dsoHTSetHTriggerLength(self._index, ctypes.byref(self._control), self._ch_mode)
+            except Exception as exc:                       # noqa: BLE001
+                self.log(f"Hantek: глубину захвата перепрограммировать не удалось ({exc})")
             self._dll.dsoHTSetRamAndTrigerControl(self._index, self._timebase_index, self._control.nCHSet, 0, 0)
 
-    def set_record_length(self, points: int) -> None:
-        # nCHEnable * points <= 64K (ограничение памяти прибора, см. PDF)
-        self._control.nReadDataLen = points
+    def set_record_length(self, points: int) -> int:
+        """Задать длину записи (точек на канал) в структуре управления.
+
+        По SDK (HTHardDll.h, комментарий к dsoHTSetHTriggerLength) nBufferLen —
+        это глубина захвата в самом приборе и должна быть кратна 512 (и не более
+        16М). Округляем ВВЕРХ до ближайшего кратного 512 (вниз нельзя — кадр
+        получится короче запрошенного окна), а затем подрезаем до памяти прибора.
+        Без выравнивания прибор получает «сырое» значение, аппаратно захватывает
+        кадр другой длины, а dsoHTGetData копирует nReadDataLen точек из буфера
+        другого размера — выход за границы памяти DLL и аварийное завершение
+        процесса без traceback. Реальное перепрограммирование глубины
+        (dsoHTSetHTriggerLength) выполняется в set_timebase — его обязательно
+        вызывают сразу после смены длины записи (см. set_timebase_for_window и
+        эталонный SDK Hantek6104BDPYLib/hantek_control.py: nBufferLen/
+        nReadDataLen/nAlreadyReadLen всегда обновляются синхронно перед
+        dsoHTSetSampleRate + dsoHTSetHTriggerLength).
+        """
+        points = max(1, int(points))
+        points = (points + 511) // 512 * 512
+        points = min(points, _MAX_POINTS_PER_CH)
         self._control.nBufferLen = points
+        self._control.nReadDataLen = points
+        self._control.nAlreadyReadLen = points
+        return points
 
     # ---- встроенный генератор (DDS) ---------------------------------------
     def configure_sweep(self, *, start: float, stop: float, seconds: float,
@@ -453,7 +516,8 @@ class HantekScope(InstrumentBase):
         self._dll.ddsSDKSetFre(self._index, ctypes.c_float(freq))
 
     def set_output(self, on: bool) -> None:
-        # По ПРИМЕРУ из SDK выход включается ddsSetOnOff(index, 1) (прозаическое
-        # описание в PDF говорит обратное и ошибочно — пример надёжнее).
+        # В примере кода из SDK выход включается вызовом ddsSetOnOff(index, 1);
+        # текстовое описание в PDF утверждает обратное, но это ошибка в документе —
+        # рабочему примеру тут стоит доверять больше, чем описанию рядом с ним.
         self._dll.ddsSetOnOff(self._index, 1 if on else 0)
         self.log(f"Hantek DDS: выход {'ВКЛ' if on else 'выкл'}")

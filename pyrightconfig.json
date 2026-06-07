@@ -1,0 +1,11 @@
+{
+  // PyQt6's bundled stubs declare many Qt accessors as returning `X | None`
+  // (QListWidget.item(), QDialogButtonBox.button(), QWidget.layout(), event
+  // parameters, etc.) even though Qt guarantees a non-None result at the
+  // call sites used throughout this codebase (e.g. right after the item/
+  // button was just added, or inside an event handler Qt itself invokes).
+  // Disabling this rule here avoids ~75 false positives that would otherwise
+  // require cluttering the UI code with redundant `assert x is not None`.
+  "include": ["signals", "main.py"],
+  "reportOptionalMemberAccess": "none"
+}

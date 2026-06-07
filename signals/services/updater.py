@@ -2,14 +2,17 @@
 signals.services.updater
 =========================
 
-Автообновление приложения с GitHub (этап 4).
+Автообновление приложения с GitHub.
 
-Идея: пользователь выбирает ВЕТКУ репозитория, приложение сверяет текущую
-установленную версию (сохранённый commit SHA) с верхушкой ветки на GitHub и при
-различии скачивает архив ветки и ЗАМЕНЯЕТ только изменённые файлы (с бэкапом).
+Пользователь выбирает ветку репозитория, а дальше всё просто: программа
+сравнивает сохранённый у себя commit SHA с верхушкой этой ветки на GitHub,
+и если они разошлись — скачивает архив ветки и подменяет только те файлы,
+что реально изменились (старые версии перед этим уносятся в бэкап).
 
-Без сторонних зависимостей — только стандартная библиотека (urllib/zipfile).
-Сетевые методы вызывать из рабочего потока (см. app_qt/update_dialog.py).
+Сторонних зависимостей нет — обходимся стандартной библиотекой (urllib и
+zipfile), чтобы не тащить лишнее ради разовой операции. Сетевые методы нужно
+вызывать из рабочего потока, не из GUI — иначе интерфейс подвиснет на время
+скачивания (где это делается — app_qt/update_dialog.py).
 """
 from __future__ import annotations
 
@@ -19,6 +22,7 @@ import shutil
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -83,7 +87,8 @@ class GitHubUpdater:
         return [(b["name"], b["commit"]["sha"]) for b in data]
 
     def branch_head(self, branch: str) -> dict:
-        b = _get_json(f"{API}/repos/{self.repo}/branches/{branch}", self.token)
+        ref = urllib.parse.quote(branch, safe="")        # кириллица/пробелы в URL
+        b = _get_json(f"{API}/repos/{self.repo}/branches/{ref}", self.token)
         commit = b["commit"].get("commit", {})
         msg = (commit.get("message") or "").splitlines()
         return {"sha": b["commit"]["sha"],
@@ -111,7 +116,8 @@ class GitHubUpdater:
 
     # ---- применение обновления --------------------------------------------
     def _download_zip(self, branch: str, say) -> bytes:
-        url = f"https://codeload.github.com/{self.repo}/zip/refs/heads/{branch}"
+        ref = urllib.parse.quote(branch, safe="")
+        url = f"https://codeload.github.com/{self.repo}/zip/refs/heads/{ref}"
         say(f"Скачивание ветки «{branch}»…")
         try:
             with urllib.request.urlopen(

@@ -19,8 +19,8 @@ from PyQt6.QtWidgets import QApplication, QStyleFactory
 
 SETTINGS_PATH = Path.home() / ".signals" / "settings.json"
 
-# Стиль виджетов Qt. По умолчанию Fusion — он чистый, одинаковый на всех ОС и НЕ
-# использует «отвратительный» нативный стиль Windows 11. На Windows доступны также
+# Стиль виджетов Qt. По умолчанию Fusion — он чистый, одинаковый на всех ОС и не
+# тащит за собой «отвратительный» нативный стиль Windows 11. На Windows доступны также
 # 'windowsvista' (вид Windows 10) и 'windows11'.
 DEFAULT_STYLE = "Fusion"
 SYSTEM_THEME = "Системная (без темы)"
@@ -103,11 +103,19 @@ QTreeWidget, QTreeView {
     border: 1px solid $border; border-radius: 8px;
 }
 QTreeView::item { padding: 5px; }
+QTreeView::item:hover { background-color: $elevated; }
 QTreeView::item:selected { background-color: $accent; color: $on_accent; }
 QHeaderView::section {
     background-color: $surface2; color: $subtext; padding: 6px;
     border: none; border-right: 1px solid $border; font-weight: bold;
 }
+QHeaderView::section:hover { background-color: $elevated; color: $text; }
+QHeaderView::section:pressed { background-color: $accent; color: $on_accent; }
+QListView::item:hover, QListWidget::item:hover { background-color: $elevated; }
+QListView::item:selected, QListWidget::item:selected {
+    background-color: $accent; color: $on_accent;
+}
+QPushButton:focus, QToolButton:focus { border: 1px solid $accent; }
 
 /* Тулбар, доки, меню */
 QToolBar { background: $surface; border-bottom: 1px solid $border; spacing: 4px; padding: 4px; }

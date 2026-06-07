@@ -5,7 +5,8 @@ signals.app_qt.main_window
 Главное окно, приведённое к логике оригинала (см. ORIGINAL_DESIGN.md):
 
 * дерево «Предмет → измерение» со столбцами: Выбор · Код предмета · Файл/измерение ·
-  Графики (КНОПКА в каждой строке) · динамические столбцы из процессора;
+  Графики (в каждой строке — кнопка, открывающая окно графиков для этого
+  измерения) · динамические столбцы из процессора;
 * имя предмета и метка измерения меняются прямо в ячейке (двойной клик);
 * фильтр — свойство столбца: двойной клик по заголовку открывает фильтр столбца;
 * настройка столбцов — диалог «Доступные ↔ Текущие» (значения из процессора);
@@ -32,6 +33,10 @@ from PyQt6.QtWidgets import (
 from ..domain import Analysis, MeasurementParams, Project, Subject
 from ..io import ProjectStore, parse_file
 from ..runtime_ext import register_user_column
+from ..services.templates import (
+    apply_to_analysis, current_formula_columns, get_template, register_formulas,
+    save_template, template_names,
+)
 from ..services import (
     DEFAULT_COLUMN_KEYS, analyze_full, column_by_key, column_value, format_value,
 )
@@ -106,7 +111,12 @@ class MainWindow(QMainWindow):
         self.tree.customContextMenuRequested.connect(self._context_menu)
         self.tree.itemDoubleClicked.connect(self._maybe_edit)
         self.tree.itemChanged.connect(self._on_item_changed)
-        self.tree.header().sectionDoubleClicked.connect(self._on_header_double_clicked)
+        hdr = self.tree.header()
+        hdr.setSectionsClickable(True); hdr.setHighlightSections(False)
+        hdr.setSortIndicatorShown(True)
+        hdr.sectionDoubleClicked.connect(self._on_header_double_clicked)
+        hdr.sectionClicked.connect(self._sort_by_column)
+        self.tree.clicked.connect(lambda idx: self._highlight_column(idx.column()))
         self.tree.analysis_dropped.connect(self._on_drop)
         self.tree.setMouseTracking(True)
         self.tree.itemEntered.connect(self._on_item_entered)
@@ -151,6 +161,105 @@ class MainWindow(QMainWindow):
         a = QAction("Проверить обновления (GitHub)…", self)
         a.triggered.connect(self._open_update_dialog); upd.addAction(a)
 
+        tpl = self.menuBar().addMenu("Шаблоны")
+        a = QAction("Шаблоны обработки…", self)
+        a.triggered.connect(self._open_templates); tpl.addAction(a)
+
+        crv = self.menuBar().addMenu("Кривые")
+        a = QAction("Набор кривых (обмен с Excel)…", self)
+        a.triggered.connect(lambda: self._open_curve_board()); crv.addAction(a)
+
+        help_menu = self.menuBar().addMenu("Справка")
+        self._help_action = help_menu.menuAction()
+        help_menu.addAction("Базовое обучение (калибровка антенн)", self._start_basic_onboarding)
+        help_menu.addAction("Продвинутое обучение (все возможности)",
+                            self._start_advanced_onboarding)
+        help_menu.addSeparator()
+        self._build_onboarding_step_menus(help_menu)
+        help_menu.addSeparator()
+        help_menu.addAction("О программе…", self._about)
+
+    def _build_onboarding_step_menus(self, parent_menu) -> None:
+        """Подменю с отдельными шагами обучения — переход к нужному шагу."""
+        from .onboarding import build_advanced_tour, build_basic_tour
+        for title, builder, starter in (
+            ("Базовое обучение — шаги", build_basic_tour, self._start_basic_onboarding),
+            ("Продвинутое обучение — шаги", build_advanced_tour, self._start_advanced_onboarding),
+        ):
+            sub = parent_menu.addMenu(title)
+            try:
+                steps = builder(self)
+            except Exception:                          # noqa: BLE001
+                steps = []
+            for i, st in enumerate(steps):
+                sub.addAction(f"{i + 1}. {st.title}",
+                              lambda _=False, i=i, run=starter: run(i))
+
+    def _start_basic_onboarding(self, step: int = 0) -> None:
+        from .onboarding import start_basic
+        start_basic(self, int(step) if step else 0)
+
+    def _start_advanced_onboarding(self, step: int = 0) -> None:
+        from .onboarding import start_advanced
+        start_advanced(self, int(step) if step else 0)
+
+    def _about(self) -> None:
+        QMessageBox.information(
+            self, "О программе",
+            "signals — анализатор АЧХ резонансных систем.\n\n"
+            "Измерение АЧХ свипом, чтение осциллограмм с поддерживаемых приборов, "
+            "обработка, сводка и набор кривых, экспорт.\n\n"
+            "Обучение и справка — в этом меню. Документация разработчика: "
+            "docs/plugins.md, docs/scenarios.md.")
+
+    def _open_curve_board(self, analyses=None) -> None:
+        from .curve_board import CurveBoard
+        items = analyses if analyses is not None else [it[2] for it in self._checked_analyses()]
+        seed = []
+        for a in items:
+            try:
+                res = self.result_for(a)
+                ch = a.selected_channel or next(iter(a.channels), "")
+                amp = res.amplitude.get(ch)
+                if amp is not None and res.freqs is not None and len(res.freqs):
+                    seed.append((a.label or a.description or "АЧХ", res.freqs, amp))
+            except Exception:                          # noqa: BLE001
+                pass
+        if not hasattr(self, "_boards"):
+            self._boards = []
+        board = CurveBoard(self, seed=seed)
+        self._boards.append(board)
+        board.show()
+
+    def _open_templates(self) -> None:
+        from .templates_dialog import TemplatesDialog
+        TemplatesDialog(self).exec()
+
+    def _save_template_from(self, analysis) -> None:
+        from PyQt6.QtWidgets import QInputDialog
+        name, ok = QInputDialog.getText(self, "Сохранить шаблон обработки", "Имя шаблона:")
+        if ok and name.strip():
+            save_template(name.strip(), analysis=analysis,
+                          columns=[c["key"] for c in self.dynamic_columns],
+                          formulas=current_formula_columns())
+            self._log(f"Шаблон сохранён: {name.strip()}")
+
+    def _apply_template_to(self, analysis, name: str) -> None:
+        rec = get_template(name)
+        if not rec:
+            return
+        apply_to_analysis(rec, analysis)
+        if rec.get("formulas"):
+            register_formulas(rec["formulas"])
+        if rec.get("columns"):
+            cols = [c for c in (column_by_key(k) for k in rec["columns"]) if c]
+            if cols:
+                self.dynamic_columns = cols
+                theme.save_settings({"columns": [c["key"] for c in cols]})
+        self._cache.pop(analysis.id, None); self._thumbs.pop(analysis.id, None)
+        self.refresh()
+        self._log(f"Шаблон «{name}» применён к измерению")
+
     def _open_update_dialog(self) -> None:
         from .update_dialog import UpdateDialog
         UpdateDialog(self).exec()
@@ -162,25 +271,39 @@ class MainWindow(QMainWindow):
             self._log(f"Папка DLL Hantek: {d} — выполняю повторный поиск приборов")
             self.instruments.detect()
 
-    def _set_style(self, name: str) -> None:
+    @staticmethod
+    def _qapp() -> QApplication | None:
+        # QApplication.instance() годами объявлен как QCoreApplication|None — оба
+        # места, где он реально нужен, работают только с полноценным QApplication
         app = QApplication.instance()
+        return app if isinstance(app, QApplication) else None
+
+    def _set_style(self, name: str) -> None:
+        app = self._qapp()
+        if app is None:
+            return
         theme.apply_style(app, name)
         theme.apply_theme(app, theme.load_settings().get("theme", "Тёмная"))
         theme.save_settings({"style": name}); self._log(f"Стиль интерфейса: {name}")
 
     def _set_theme(self, name: str) -> None:
-        theme.apply_theme(QApplication.instance(), name)
+        app = self._qapp()
+        if app is None:
+            return
+        theme.apply_theme(app, name)
         theme.save_settings({"theme": name}); self._log(f"Тема: {name}")
 
     def _load_custom_theme(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "Стиль", "", "QSS (*.qss)")
-        if path:
-            theme.apply_theme(QApplication.instance(), path)
+        app = self._qapp()
+        if path and app is not None:
+            theme.apply_theme(app, path)
             theme.save_settings({"theme": path}); self._log(f"Стиль: {path}")
 
     # ---- тулбар ------------------------------------------------------------
     def _build_toolbar(self) -> None:
         tb = self.addToolBar("Главная"); tb.setMovable(False)
+        self.toolbar = tb
         tb.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         S = self.style().StandardPixmap
 
@@ -188,7 +311,8 @@ class MainWindow(QMainWindow):
             a = tb.addAction(self._icon(icon), text); a.setToolTip(tip)
             a.triggered.connect(slot); return a
 
-        act(S.SP_FileDialogNewFolder, "Добавить предмет", "Добавить новый предмет", self.add_subject)
+        self.act_add_subject = act(S.SP_FileDialogNewFolder, "Добавить предмет",
+                                   "Добавить новый предмет", self.add_subject)
         act(S.SP_DialogOpenButton, "Добавить измерения",
             "Открыть CSV/Excel в выбранный предмет (или по имени файла)", self.load_files)
         act(S.SP_DirOpenIcon, "Открыть проект/анализ",
@@ -197,14 +321,16 @@ class MainWindow(QMainWindow):
         act(S.SP_DialogSaveButton, "Сохранить выбранные",
             "Сохранить только отмеченные измерения в файл", self.save_selected)
         tb.addSeparator()
-        act(S.SP_FileDialogListView, "Настройки столбцов", "Выбрать отображаемые столбцы",
-            self.configure_columns)
+        self.act_columns = act(S.SP_FileDialogListView, "Настройки столбцов",
+                               "Выбрать отображаемые столбцы", self.configure_columns)
         act(S.SP_DialogResetButton, "Отключить фильтры", "Сбросить все фильтры", self.clear_filters)
         act(S.SP_FileDialogDetailedView, "Добавить столбец", "Пользовательский столбец-формула",
             self.add_column)
         tb.addSeparator()
-        act(S.SP_FileDialogInfoView, "Сводка", "Сводный график по отмеченным", self.open_summary)
-        act(S.SP_DriveHDIcon, "Экспорт .sigproj", "Упаковать проект в один файл", self.export_archive)
+        self.act_summary = act(S.SP_FileDialogInfoView, "Сводка",
+                               "Сводный график по отмеченным", self.open_summary)
+        self.act_export = act(S.SP_DriveHDIcon, "Экспорт .sigproj",
+                              "Упаковать проект в один файл", self.export_archive)
 
     def _build_docks(self) -> None:
         self.instruments = InstrumentPanel()
@@ -310,6 +436,69 @@ class MainWindow(QMainWindow):
                 if a_item.checkState(COL_CHECK) == Qt.CheckState.Checked:
                     out.append(a_item.data(0, ROLE))
         return out
+
+    def _sort_by_column(self, col: int) -> None:
+        """Клик по заголовку — сортировка по столбцу (как у любого столбца) + подсветка."""
+        if col in (COL_CHECK, COL_GRAPH):
+            self._highlight_column(col); return
+        import math
+        from PyQt6.QtCore import Qt as _Qt
+        desc = not getattr(self, "_sort_dir", {}).get(col, True)
+        self._sort_dir = {col: desc}
+        dyn = (self.dynamic_columns[col - DYN_START]
+               if col >= DYN_START and (col - DYN_START) < len(self.dynamic_columns) else None)
+
+        def value(a):
+            if col == COL_CODE:
+                return a.description or ""
+            if col == COL_FILE:
+                return a.label or ""
+            if dyn is not None:
+                try:
+                    return column_value(a, self.result_for(a), dyn)
+                except Exception:                      # noqa: BLE001
+                    return None
+            return ""
+
+        def keyf(a):
+            v = value(a)
+            if isinstance(v, (int, float)):
+                return (0, float("inf") if (isinstance(v, float) and math.isnan(v)) else float(v))
+            return (1, str(v).lower() if v is not None else "")
+
+        def subj_key(s):
+            if col == COL_CODE:
+                return (1, (s.name or s.code or "").lower())     # по имени предмета
+            if not s.analyses:
+                return (2, "")
+            return keyf(s.analyses[0])                            # по первому измерению
+
+        for s in self.project.subjects:
+            s.analyses.sort(key=keyf, reverse=desc)
+        self.project.subjects.sort(key=subj_key, reverse=desc)    # сортируем и сами предметы
+        self.tree.header().setSortIndicator(
+            col, _Qt.SortOrder.DescendingOrder if desc else _Qt.SortOrder.AscendingOrder)
+        self.refresh()
+        self._highlight_column(col)
+
+    def _highlight_column(self, col: int) -> None:
+        """Подсветить выбранный столбец (Qt сам выделяет строки — это фидбэк по столбцу)."""
+        from PyQt6.QtGui import QBrush, QColor
+        ncols = self.tree.columnCount()
+        tint = QColor(self.palette().highlight().color()); tint.setAlpha(55)
+
+        def paint(item) -> None:
+            for c in range(ncols):
+                item.setBackground(c, QBrush())        # сброс прошлой подсветки
+            if 0 <= col < ncols:
+                item.setBackground(col, QBrush(tint))
+
+        for i in range(self.tree.topLevelItemCount()):
+            s = self.tree.topLevelItem(i)
+            paint(s)
+            for j in range(s.childCount()):
+                paint(s.child(j))
+        self._hl_col = col
 
     # ---- фильтры (свойство столбца) ----------------------------------------
     def _on_header_double_clicked(self, index: int) -> None:
@@ -421,13 +610,15 @@ class MainWindow(QMainWindow):
         self.refresh()
 
     def _on_captured(self, channels: dict, cfg) -> None:
+        from datetime import datetime
+        ts = datetime.now().strftime("%H:%M:%S_%d/%m/%Y")          # метка времени записи
         if cfg is not None:
             params = MeasurementParams(start_freq=cfg.start_freq, end_freq=cfg.end_freq,
                                        record_time=cfg.sweep_time, amplitude=cfg.amplitude,
                                        offset=cfg.offset, sweep_time=cfg.sweep_time)
-            label = f"Свип {cfg.start_freq:.0f}–{cfg.end_freq:.0f} Гц"
+            label = f"{ts} · Свип {cfg.start_freq:.0f}–{cfg.end_freq:.0f} Гц"
         else:
-            params = MeasurementParams(); label = "Чтение осциллографа"
+            params = MeasurementParams(); label = f"{ts} · Чтение осциллографа"
         subject = self._selected_subject() or self._subject_by_code("Измерения")
         subject.analyses.append(Analysis(params=params, channels=channels, label=label))
         self._log(f"Измерение: {label} ({len(channels)} каналов) → «{subject.code}»")
@@ -554,6 +745,16 @@ class MainWindow(QMainWindow):
             for s in self.project.subjects:
                 if s is not data[1]:
                     sub.addAction(s.name, lambda _=False, s=s, d=data: self._move(d, s))
+            menu.addSeparator()
+            menu.addAction("АЧХ в набор кривых",
+                           lambda a=data[2]: self._open_curve_board([a]))
+            menu.addAction("Сохранить обработку как шаблон…",
+                           lambda a=data[2]: self._save_template_from(a))
+            names = template_names()
+            if names:
+                apply_sub = menu.addMenu("Применить шаблон")
+                for n in names:
+                    apply_sub.addAction(n, lambda _=False, n=n, a=data[2]: self._apply_template_to(a, n))
         else:
             menu.addAction("Переименовать предмет", lambda it=item: self.tree.editItem(it, COL_CODE))
         menu.addAction("Удалить", self.delete_selected)
@@ -581,11 +782,11 @@ class MainWindow(QMainWindow):
             subject.analyses.remove(analysis)
         self.refresh()
 
-    def keyPressEvent(self, event) -> None:
-        if event.key() == Qt.Key.Key_Delete and self.tree.hasFocus():
+    def keyPressEvent(self, a0) -> None:
+        if a0 is not None and a0.key() == Qt.Key.Key_Delete and self.tree.hasFocus():
             self.delete_selected()
         else:
-            super().keyPressEvent(event)
+            super().keyPressEvent(a0)
 
     # ---- сохранение / открытие --------------------------------------------
     def save_project(self) -> None:
@@ -663,15 +864,18 @@ class MainWindow(QMainWindow):
             self.store.pack(self.project_dir, path); self._log(f"Экспортировано: {path}")
 
     # ---- выход -------------------------------------------------------------
-    def closeEvent(self, event) -> None:
+    def closeEvent(self, a0) -> None:
         reply = QMessageBox.question(
             self, "Выход", "Сохранить проект перед выходом?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
             | QMessageBox.StandardButton.Cancel, QMessageBox.StandardButton.Yes)
         if reply == QMessageBox.StandardButton.Cancel:
-            event.ignore(); return
+            if a0 is not None:
+                a0.ignore()
+            return
         if reply == QMessageBox.StandardButton.Yes:
             self.save_project()
         for win in list(self._windows):
             win.close()
-        event.accept()
+        if a0 is not None:
+            a0.accept()

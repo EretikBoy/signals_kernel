@@ -42,7 +42,7 @@ def available_columns() -> list[dict]:
     """Стандартные столбцы + пользовательские формулы (из реестра COLUMNS)."""
     cols = [dict(c) for c in STANDARD_COLUMNS]
     for entry in COLUMNS:
-        if entry.meta.get("source") == "runtime":
+        if entry.source == "runtime":          # source — атрибут Entry, не meta
             cols.append({"key": entry.key, "title": entry.label, "source": "formula"})
     return cols
 

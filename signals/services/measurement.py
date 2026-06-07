@@ -2,15 +2,18 @@
 signals.services.measurement
 ============================
 
-Сценарий измерения АЧХ: генератор делает свип за ВРЕМЯ РАЗВЁРТКИ (sweep_time),
-осциллограф снимает отклик. Как в оригинале — свип задаётся временем, а не числом
-точек. Осциллограф и генератор — РАЗДЕЛЬНЫЕ приборы (у Hantek это один прибор,
-тогда оба ссылаются на него же).
+Сценарий измерения АЧХ: генератор гонит свип за заданное время развёртки
+(`sweep_time`), осциллограф снимает отклик. Свип задаётся именно временем, а не
+числом точек — так было в оригинале, и менять это незачем. Осциллограф и
+генератор передаются как два отдельных прибора — для Hantek, где это один и тот
+же физический прибор, в оба параметра просто попадает одна и та же ссылка.
 
-Внутри для PC-USB прибора частота меняется небольшими шагами в пределах sweep_time
-(аппаратный линейный свип HTHardDll не выверен без железа); число шагов скрыто от
-пользователя. Результат — Channel с осью времени 0..sweep_time, которую движок
-линейно отображает в частоту, поэтому весь конвейер работает без изменений.
+Для USB-приборов частота внутри меняется небольшими шагами в пределах
+`sweep_time` (аппаратный линейный свип HTHardDll проверить без железа было
+нельзя — пользователю число шагов не видно, и если что-то не так, это можно
+поправить незаметно для остального кода). Результат — `Channel`, где ось
+времени идёт от 0 до `sweep_time`; движок сам линейно растягивает её в
+частоту, так что весь остальной конвейер обработки не замечает разницы.
 """
 from __future__ import annotations
 
@@ -34,7 +37,6 @@ class SweepConfig:
     offset: float = 0.0
     function: str = "SIN"
     points: int = 300                 # внутреннее разрешение свипа (в UI не показывается)
-    pre_roll: float = 1.0             # запись ~1 c ДО подачи сигнала (виден фронт)
 
 
 ProgressFn = Callable[[int, str], None]
@@ -47,8 +49,9 @@ class MeasurementService:
 
     def run(self, cfg: SweepConfig, *, progress=None, log=None,
             should_stop=None) -> dict[str, Channel]:
-        """Снять АЧХ: генератор «качает» частоту start→stop за sweep_time, осциллограф
-        в режиме пик-детектора снимает ОДИН длинный кадр (окно ≥ sweep_time).
+        """Снять АЧХ: генератор «качает» частоту start→stop за sweep_time, а осциллограф
+        в режиме пик-детектора пишет всё это одним длинным кадром (с окном захвата
+        не меньше sweep_time) — отдельные кадры под каждую частоту тут не нужны.
 
         Возвращает сырые осциллограммы CH1..CH4 (CH1 — сигнал генератора для
         определения фронта, CH2 — отклик). АЧХ из них строит движок analyze().
@@ -59,47 +62,50 @@ class MeasurementService:
         if not supports(self.generator, Cap.GENERATOR):
             raise RuntimeError("Прибор не поддерживает генератор — измерение свипом невозможно")
 
-        # 1) осциллограф: развёртка под окно ≥ (предзапись + время свипа) + пик-детектор
-        total = cfg.sweep_time + max(cfg.pre_roll, 0.0)
+        # 1) осциллограф: развёртка под окно ≈ время свипа + пик-детектор
         if hasattr(self.scope, "set_timebase_for_window"):
-            self.scope.set_timebase_for_window(total)
+            self.scope.set_timebase_for_window(cfg.sweep_time)
         if hasattr(self.scope, "set_peak_detect"):
             self.scope.set_peak_detect(True)
         say(f"Свип {cfg.start_freq:.0f}→{cfg.end_freq:.0f} Гц за {cfg.sweep_time:g} c "
-            f"(предзапись {cfg.pre_roll:g} c, пик-детектор, один кадр)")
+            f"(пик-детектор, один кадр)")
 
-        # 2) генератор: параметры сигнала (выход пока ВЫКЛ — пишем базовый уровень)
+        # 2) генератор: задаём параметры сигнала, выход пока выключен — включим
+        #    его сразу с запуском захвата, чтобы кадр и чирп шли синхронно
         self.generator.configure_sweep(
             start=cfg.start_freq, stop=cfg.end_freq, seconds=cfg.sweep_time,
             amplitude=cfg.amplitude, offset=cfg.offset, function=cfg.function)
         self.generator.set_output(False)
         set_freq = getattr(self.generator, "set_frequency", None)
 
-        output_on = False
+        stopped = False
         try:
-            # 3) запускаем ОДНО длинное измерение (захват начинается ДО сигнала)
+            # 3) запуск захвата и генератора — одним моментом, без рассинхрона
             if hasattr(self.scope, "start_acquisition"):
                 self.scope.start_acquisition()
-            # 4) предзапись (генератор молчит) → включаем генератор → чирп → удержание
-            window = getattr(self.scope, "window_seconds", None) or total
-            window = max(window, total)
+            self.generator.set_output(True)
+            window = getattr(self.scope, "window_seconds", None) or cfg.sweep_time
+            window = max(window, cfg.sweep_time)
             t0 = time.time()
             while True:
                 if stop():
-                    say("Измерение остановлено"); break
+                    stopped = True
+                    say("Измерение остановлено")
+                    break
                 elapsed = time.time() - t0
                 if elapsed >= window:
                     break
-                if elapsed >= cfg.pre_roll:
-                    if not output_on:
-                        self.generator.set_output(True); output_on = True   # фронт здесь
-                    sw = elapsed - cfg.pre_roll
-                    sf = min(sw / cfg.sweep_time, 1.0) if cfg.sweep_time > 0 else 1.0
-                    if callable(set_freq):
-                        set_freq(cfg.start_freq + (cfg.end_freq - cfg.start_freq) * sf)
+                sf = min(elapsed / cfg.sweep_time, 1.0) if cfg.sweep_time > 0 else 1.0
+                if callable(set_freq):
+                    set_freq(cfg.start_freq + (cfg.end_freq - cfg.start_freq) * sf)
                 prog(int(min(elapsed / window, 1.0) * 100))
                 time.sleep(0.05)
-            # 5) читаем один кадр целиком
+            if stopped:
+                # пользователь нажал «Остановить» — не ждём оставшееся окно и не
+                # читаем кадр (read_captured может блокировать на десятки секунд),
+                # пустой словарь worker отбросит сам, увидев флаг остановки
+                return {}
+            # 4) читаем один кадр целиком
             if hasattr(self.scope, "read_captured"):
                 channels = self.scope.read_captured()
             else:

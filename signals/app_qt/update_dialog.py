@@ -8,6 +8,7 @@ signals.app_qt.update_dialog
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -204,8 +205,13 @@ class UpdateDialog(QDialog):
 
     def _restart(self) -> None:
         try:
+            if getattr(sys, "frozen", False):          # собранный .exe
+                args = [sys.executable, *sys.argv[1:]]
+            else:                                       # python main.py
+                args = [sys.executable, os.path.abspath(sys.argv[0]), *sys.argv[1:]]
+            # Popen со списком сам экранирует пробелы/кириллицу в пути — в отличие от execv
+            subprocess.Popen(args, cwd=str(_APP_ROOT))
             QApplication.quit()
-            os.execv(sys.executable, [sys.executable, *sys.argv])
         except Exception as exc:                       # noqa: BLE001
             QMessageBox.information(self, "Перезапуск",
                                     f"Не удалось перезапустить автоматически ({exc}).\n"
