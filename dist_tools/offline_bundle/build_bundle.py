@@ -92,8 +92,10 @@ def _enable_pip(pyruntime: Path, arch: str) -> Path:
     get_pip.unlink()
 
     # современный get-pip.py больше не тащит setuptools/wheel — а часть пакетов
-    # (libusb-package и т.п.) собирается из sdist и требует setuptools.build_meta
-    _run([str(python_exe), "-m", "pip", "install", "--no-warn-script-location", "setuptools", "wheel"])
+    # (libusb-package и т.п.) собирается из sdist и требует setuptools.build_meta;
+    # setuptools_scm/tomli — для их собственного build-backend (см. _install_packages)
+    _run([str(python_exe), "-m", "pip", "install", "--no-warn-script-location",
+          "setuptools", "wheel", "setuptools_scm", "tomli"])
     return python_exe
 
 
@@ -103,7 +105,12 @@ def _install_packages(python_exe: Path, arch: str) -> None:
         packages += QT6_PACKAGES   # PyQt6 не публикует колёса под win32
     qt_label = "PyQt5+PyQt6" if arch == "amd64" else "только PyQt5 (нет колёс PyQt6 под win32)"
     print(f"  [3/3] Установка библиотек ({len(packages)} пакетов, {qt_label})")
-    _run([str(python_exe), "-m", "pip", "install", "--no-warn-script-location", *packages])
+    # --no-build-isolation: у embeddable Python ._pth игнорирует PYTHONPATH, из-за
+    # чего изолированное build-окружение pip невидимо подпроцессу сборки sdist
+    # (напр. libusb-package падает с ModuleNotFoundError: setuptools_scm) —
+    # без изоляции сборка использует основной site-packages, где всё уже стоит
+    _run([str(python_exe), "-m", "pip", "install", "--no-warn-script-location",
+          "--no-build-isolation", *packages])
 
 
 def build_runtime(arch: str, out_dir: Path) -> None:
