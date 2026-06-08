@@ -87,9 +87,14 @@ def _enable_pip(pyruntime: Path, arch: str) -> Path:
 
     get_pip = pyruntime / "get-pip.py"
     _download(GET_PIP_URL, get_pip)
-    _run([str(pyruntime / "python.exe"), str(get_pip), "--no-warn-script-location"])
+    python_exe = pyruntime / "python.exe"
+    _run([str(python_exe), str(get_pip), "--no-warn-script-location"])
     get_pip.unlink()
-    return pyruntime / "python.exe"
+
+    # современный get-pip.py больше не тащит setuptools/wheel — а часть пакетов
+    # (libusb-package и т.п.) собирается из sdist и требует setuptools.build_meta
+    _run([str(python_exe), "-m", "pip", "install", "--no-warn-script-location", "setuptools", "wheel"])
+    return python_exe
 
 
 def _install_packages(python_exe: Path, arch: str) -> None:
