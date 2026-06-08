@@ -44,6 +44,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--installer", type=Path, default=None,
                         help="путь к собранному install.exe — кладётся в корень бандла")
     args = parser.parse_args(argv)
+    bundle_common.force_utf8_console()
     build(args.out, args.installer)
     return 0
 

@@ -2,9 +2,17 @@
 from __future__ import annotations
 
 import shutil
+import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def force_utf8_console() -> None:
+    """Винда печатает в cp125x — кириллица/стрелки в print() валят CI с UnicodeEncodeError."""
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
 
 APP_INCLUDE = ["main.py", "signals"]
 APP_EXCLUDE_DIR_NAMES = {"__pycache__", ".git"}

@@ -135,6 +135,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--installer", type=Path, default=None,
                         help="путь к собранному install.exe — кладётся в корень бандла")
     args = parser.parse_args(argv)
+    bundle_common.force_utf8_console()
 
     if sys.platform != "win32":
         print("Сборка оффлайн-бандла рассчитана на запуск под Windows "
