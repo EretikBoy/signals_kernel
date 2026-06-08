@@ -39,7 +39,7 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path vendor/tekvisa | Out-Null
-          Invoke-WebRequest -Uri $env:TEKVISA_URL -OutFile vendor/tekvisa/TekVISA-installer.exe
+          Invoke-WebRequest -Uri $env:TEKVISA_URL -OutFile vendor/tekvisa/TekVISA-installer.exe -MaximumRetryCount 3 -RetryIntervalSec 10
       - uses: actions/upload-artifact@v4
         with:
           name: vendor-tekvisa
