@@ -30,14 +30,16 @@ jobs:
   # не задан — собираем без него (оба сборщика бандлов это переживают с предупреждением).
   fetch-vendor:
     runs-on: windows-latest
+    env:
+      TEKVISA_URL: ${{ secrets.TEKVISA_URL }}
     steps:
       - uses: actions/checkout@v4
       - name: Скачать установщик TekVISA
-        if: ${{ secrets.TEKVISA_URL != '' }}
+        if: ${{ env.TEKVISA_URL != '' }}
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path vendor/tekvisa | Out-Null
-          Invoke-WebRequest -Uri '${{ secrets.TEKVISA_URL }}' -OutFile vendor/tekvisa/TekVISA-installer.exe
+          Invoke-WebRequest -Uri $env:TEKVISA_URL -OutFile vendor/tekvisa/TekVISA-installer.exe
       - uses: actions/upload-artifact@v4
         with:
           name: vendor-tekvisa
