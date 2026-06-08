@@ -1,7 +1,8 @@
 """
-Шаги онлайн-установки: скачать Python, поставить приватную копию (без venv —
-его скрипты хранят абсолютные пути и ломаются при переносе), поставить
-зависимости под Qt-биндинг, разложить app/ и запустить TekVISA.
+Шаги онлайн-установки: найти подходящий Python и сделать на его основе venv
+(а если на машине ничего подходящего нет — поставить приватную копию с
+python.org), поставить зависимости под Qt-биндинг, разложить app/ и
+запустить TekVISA.
 
 Шаг — функция (ctx, report), report(fraction, text) двигает прогресс-бар
 в [0..1]. Выполняются в фоновом потоке (см. ui.py) — Tk трогать нельзя,
@@ -12,6 +13,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 import urllib.request
+import winreg
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -32,6 +34,8 @@ class InstallContext:
     install_dir: Path     # куда раскладываем рабочее окружение и приложение
     payload_dir: Path     # папка рядом с installer.exe: app/, requirements-*.txt, tekvisa/
     python_installer: Path | None = field(default=None, init=False)
+    existing_python: Path | None = field(default=None, init=False)
+    venv_created: bool = field(default=False, init=False)
 
     @property
     def python_dir(self) -> Path:
@@ -39,6 +43,9 @@ class InstallContext:
 
     @property
     def python_exe(self) -> Path:
+        # venv кладёт интерпретатор в Scripts/, приватная копия — прямо в корень
+        if self.venv_created:
+            return self.python_dir / "Scripts" / "python.exe"
         return self.python_dir / "python.exe"
 
     @property
@@ -67,6 +74,29 @@ def _download(url: str, dest: Path, report: ProgressFn, *, label: str) -> None:
                     report(0.0, f"{label}: {read // 1024} КиБ")
 
 
+def _registered_python(profile: detect.TargetProfile) -> Path | None:
+    """PEP 514: оф. инсталлятор python.org регистрирует себя в
+    SOFTWARE\\Python\\PythonCore\\<major.minor>[-32]\\InstallPath (HKCU — для
+    текущего пользователя, HKLM — для всех). Если нужная версия уже стоит,
+    используем её — повторный запуск инсталлятора с той же версией не сработает:
+    Burn-бутстрэппер определяет «уже установлено» и игнорирует TargetDir,
+    тихо завершаясь успехом без копирования файлов в приватную папку."""
+    major_minor = ".".join(profile.python_version.split(".")[:2])
+    tag = major_minor + ("-32" if profile.python_arch == "win32" else "")
+    wow_flag = winreg.KEY_WOW64_32KEY if profile.python_arch == "win32" else winreg.KEY_WOW64_64KEY
+    for hive, flags in ((winreg.HKEY_CURRENT_USER, 0), (winreg.HKEY_LOCAL_MACHINE, wow_flag)):
+        try:
+            with winreg.OpenKey(hive, rf"SOFTWARE\Python\PythonCore\{tag}\InstallPath",
+                                0, winreg.KEY_READ | flags) as key:
+                install_path, _ = winreg.QueryValueEx(key, "")
+        except OSError:
+            continue
+        exe = Path(install_path) / "python.exe"
+        if exe.exists():
+            return exe
+    return None
+
+
 def _run_silent(args: list[str], *, step_label: str, report: ProgressFn) -> None:
     report(0.0, step_label)
     proc = subprocess.run(args, capture_output=True, text=True, creationflags=_NO_WINDOW)
@@ -77,7 +107,20 @@ def _run_silent(args: list[str], *, step_label: str, report: ProgressFn) -> None
 
 # ---- шаги конвейера -----------------------------------------------------------
 
+def step_find_python(ctx: InstallContext, report: ProgressFn) -> None:
+    report(0.0, "Поиск установленного Python…")
+    found = _registered_python(ctx.profile)
+    if found is not None:
+        ctx.existing_python = found
+        report(1.0, f"Найден подходящий Python: {found} — сделаем venv на его основе")
+    else:
+        report(1.0, "Подходящий Python не найден — будет установлена приватная копия")
+
+
 def step_download_python(ctx: InstallContext, report: ProgressFn) -> None:
+    if ctx.existing_python is not None:
+        report(1.0, "пропуск — venv будет создано на основе найденного Python")
+        return
     url = detect.python_installer_url(ctx.profile)
     dest = ctx.install_dir / f"python-{ctx.profile.python_version}-{ctx.profile.python_arch}.exe"
     report(0.0, f"Скачивание Python {ctx.profile.python_version} ({ctx.profile.python_arch})…")
@@ -86,7 +129,13 @@ def step_download_python(ctx: InstallContext, report: ProgressFn) -> None:
 
 
 def step_install_python(ctx: InstallContext, report: ProgressFn) -> None:
-    """Тихая установка в приватную папку — не «для всех», без PATH, изолированно от системного Python."""
+    """Тихая установка в приватную папку — не «для всех», без PATH, изолированно от системного
+    Python. Только запасной путь на случай, если на машине вообще нет подходящего Python
+    (если есть — см. step_create_venv: повторный запуск инсталлятора с той же версией не
+    срабатывает, Burn-бутстрэппер определяет «уже установлено» и игнорирует TargetDir)."""
+    if ctx.existing_python is not None:
+        report(1.0, "пропуск — venv будет создано на основе найденного Python")
+        return
     assert ctx.python_installer is not None
     _run_silent([
         str(ctx.python_installer), "/quiet",
@@ -97,6 +146,23 @@ def step_install_python(ctx: InstallContext, report: ProgressFn) -> None:
         raise RuntimeError("Установщик Python отработал, но python.exe не появился — "
                            f"ожидался путь {ctx.python_exe}")
     report(1.0, "Python установлен")
+
+
+def step_create_venv(ctx: InstallContext, report: ProgressFn) -> None:
+    """Изолируем зависимости приложения от системного Python через venv —
+    создаётся один раз на месте и никуда не переносится, так что абсолютные
+    пути в его скриптах не проблема."""
+    if ctx.existing_python is None:
+        report(1.0, "пропуск — используется приватная копия Python")
+        return
+    report(0.0, f"Создание окружения на основе {ctx.existing_python}…")
+    _run_silent([str(ctx.existing_python), "-m", "venv", str(ctx.python_dir)],
+                step_label="Создание окружения", report=report)
+    ctx.venv_created = True
+    if not ctx.python_exe.exists():
+        raise RuntimeError("venv создано, но python.exe не появился — "
+                           f"ожидался путь {ctx.python_exe}")
+    report(1.0, "Окружение создано")
 
 
 def step_upgrade_pip(ctx: InstallContext, report: ProgressFn) -> None:
@@ -135,8 +201,10 @@ def step_run_tekvisa(ctx: InstallContext, report: ProgressFn) -> None:
 
 
 PIPELINE: list[tuple[str, Step]] = [
+    ("Поиск Python", step_find_python),
     ("Скачивание Python", step_download_python),
     ("Установка Python", step_install_python),
+    ("Создание окружения", step_create_venv),
     ("Обновление pip", step_upgrade_pip),
     ("Установка библиотек", step_install_requirements),
     ("Копирование приложения", step_copy_app),
