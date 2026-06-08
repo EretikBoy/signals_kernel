@@ -1,0 +1,17 @@
+# Зависимости для Windows 8.1/10/11 — современный Qt-биндинг.
+# Должны оставаться синхронизированы с requirements.txt в корне проекта,
+# requirements-qt5.txt и build_offline_bundle.py.
+PyQt6>=6.5
+numpy>=1.24
+pandas>=2.0
+matplotlib>=3.7
+openpyxl>=3.1
+
+# Ленивые импорты приборных плагинов (signals/contrib) — их нет в корневом
+# requirements.txt, но без них не подключатся Tektronix/Rigol (USES_VISA):
+# tm_devices — управление Tektronix (inst_tektronix.py: DeviceManager.add_scope);
+# pyvisa     — низкоуровневый VISA для Rigol и общего сканирования (workers.py).
+# tm_devices сам тянет pyvisa транзитивно, но фиксируем явно — это прямой
+# импорт нашего кода, а не случайный довесок.
+tm_devices>=2.0
+pyvisa>=1.13

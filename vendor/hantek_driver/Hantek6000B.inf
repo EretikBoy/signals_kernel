@@ -1,0 +1,122 @@
+; Installation INF for the Hantek6000B USB Driver for Windows 
+; Processor support for OS unknown platforms.
+;
+; (c) Copyright 2017 Cypress Semiconductor Corporation
+;
+[Version]
+Signature = "$CHICAGO$"
+Class = %DisplayClassName%
+ClassGuid = {36FC9E60-C465-11CF-8056-445566778899}
+provider = %INF_Provider%
+CatalogFile =Hantek6000B.cat
+DriverVer = 09/11/2017,3.4.7.000
+
+[ClassInstall32] 
+AddReg = display_class_addreg
+
+[display_class_addreg]
+HKR,,,,%DisplayClassName%
+HKR,,SilentInstall,,1
+HKR,,NoInstallClass,,1
+HKR,,Icon,,"-1"
+
+[SourceDisksNames]
+1 = %INSTALLMEDIA%
+
+[SourceDisksFiles]
+Hantek6000BX86.SYS = 1
+Hantek6000BAMD64.SYS = 1
+Hantek6000BIA64.SYS = 1
+
+[Manufacturer]
+%MFG% = ODM,NTia64,NTamd64
+
+[ODM]
+%DeviceDesc% = Oscilloscope.Dev, USB\VID_04B5&PID_6CDE
+
+[ODM.NTamd64]
+%DeviceDesc% = Oscilloscope.Dev.NTamd64, USB\VID_04B5&PID_6CDE
+
+[ODM.NTia64]
+%DeviceDesc% = Oscilloscope.Dev.NTia64, USB\VID_04B5&PID_6CDE
+
+[DestinationDirs]
+Oscilloscope.Files.Ext = 10,System32\Drivers
+Oscilloscope.Files.Ext.amd64 = 10,System32\Drivers
+Oscilloscope.Files.Ext.ia64 = 10,System32\Drivers
+
+[Oscilloscope.Dev]
+CopyFiles = Oscilloscope.Files.Ext
+AddReg = Oscilloscope.AddReg
+
+[Oscilloscope.Dev.NT]
+CopyFiles = Oscilloscope.Files.Ext
+AddReg = Oscilloscope.AddReg
+
+[Oscilloscope.Dev.NTamd64]
+CopyFiles = Oscilloscope.Files.Ext.amd64
+AddReg = Oscilloscope.amd64.AddReg
+
+[Oscilloscope.Dev.NTia64]
+CopyFiles = Oscilloscope.Files.Ext.IA64
+AddReg = Oscilloscope.ia64.AddReg
+
+[Oscilloscope.Dev.NT.Services]
+Addservice = Oscilloscope, 0x00000002, Oscilloscope.AddService
+
+[Oscilloscope.Dev.NTamd64.Services]
+AddService = Oscilloscope, 2, Oscilloscope.AddServiceAmd64
+
+[Oscilloscope.Dev.NTia64.Services]
+AddService = Oscilloscope, 2, Oscilloscope.AddServiceIA64
+
+[Oscilloscope.AddService]
+DisplayName = %SvcDesc%
+ServiceType = 1                  
+StartType = 3                  
+ErrorControl = 1                  
+ServiceBinary = %10%\System32\Drivers\Hantek6000BX86.SYS
+LoadOrderGroup = Base
+
+[Oscilloscope.AddServiceAmd64]
+DisplayName = %SvcDesc%
+ServiceType = 1
+StartType = 3
+ErrorControl = 1
+ServiceBinary = %10%\System32\Drivers\Hantek6000BAMD64.SYS
+
+[Oscilloscope.AddServiceIA64]
+DisplayName = %SvcDesc%
+ServiceType = 1
+StartType = 3
+ErrorControl = 1
+ServiceBinary = %10%\System32\Drivers\Hantek6000BIA64.SYS
+
+[Oscilloscope.AddReg]
+HKR,,DevLoader,,*ntkern
+HKR,,NTMPDriver,,Hantek6000BX86.SYS
+
+[Oscilloscope.amd64.AddReg]
+HKR,,DevLoader,,*ntkern
+HKR,,NTMPDriver,,Hantek6000BAMD64.SYS
+
+[Oscilloscope.ia64.AddReg]
+HKR,,DevLoader,,*ntkern
+HKR,,NTMPDriver,,Hantek6000BIA64.SYS
+
+[Oscilloscope.Files.Ext]
+Hantek6000BX86.SYS
+
+[Oscilloscope.Files.Ext.amd64]
+Hantek6000BAMD64.SYS
+
+[Oscilloscope.Files.Ext.IA64]
+Hantek6000BIA64.SYS
+
+[Strings]
+DisplayClassName = "Hantek6000B"
+INF_Provider = "Hantek6000B"
+MFG = "Hantek6000B"
+DeviceDesc = "Hantek6000B"
+SvcDesc = "Hantek6000B Scope Service"
+INSTALLMEDIA = "Windows NT Driver Install Disk"

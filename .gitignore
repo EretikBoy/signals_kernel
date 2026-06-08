@@ -1,3 +1,13 @@
 .signals_version.json
 __pycache__/
 .backup*
+
+# Бинарники сторонних вендоров для оффлайн-бандла (см. vendor/tekvisa/README.md) —
+# большие, не наши, не должны раздувать репозиторий.
+vendor/**/*.exe
+vendor/**/*.msi
+vendor/**/*.zip
+
+# Рабочие папки сборки дистрибутивов (dist_tools/*) — генерируются CI/локально.
+/build/
+/dist/

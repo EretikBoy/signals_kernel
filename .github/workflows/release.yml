@@ -1,0 +1,99 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  # install.exe — общий стаб для online- и offline-бандлов. Собираем под x86:
+  # 32-битный exe работает и на x86, и на x64 Windows через WOW64, тогда как
+  # 64-битный exe на x86 Windows не запустится вовсе.
+  build-stub:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          architecture: x86
+      - run: pip install pyinstaller
+      - run: pyinstaller --onefile --noconsole --name install dist_tools/run_installer.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: install-exe
+          path: dist/install.exe
+
+  # TekVISA — сторонний бинарник, не хранится в git (см. vendor/tekvisa/README.md).
+  # Кладём его в vendor/tekvisa/ из заранее подготовленного хранилища; если секрет
+  # не задан — собираем без него (оба сборщика бандлов это переживают с предупреждением).
+  fetch-vendor:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Скачать установщик TekVISA
+        if: ${{ secrets.TEKVISA_URL != '' }}
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path vendor/tekvisa | Out-Null
+          Invoke-WebRequest -Uri '${{ secrets.TEKVISA_URL }}' -OutFile vendor/tekvisa/TekVISA-installer.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vendor-tekvisa
+          path: vendor/tekvisa
+          if-no-files-found: ignore
+
+  build-online:
+    needs: [build-stub, fetch-vendor]
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: install-exe, path: dist }
+      - uses: actions/download-artifact@v4
+        with: { name: vendor-tekvisa, path: vendor/tekvisa }
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: python -m dist_tools.online_bundle.build_bundle --out build/online --installer dist/install.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: signals-online
+          path: build/signals-online.zip
+
+  build-offline:
+    needs: [build-stub, fetch-vendor]
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: install-exe, path: dist }
+      - uses: actions/download-artifact@v4
+        with: { name: vendor-tekvisa, path: vendor/tekvisa }
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      # тяжёлый шаг: качает embeddable-сборки Python x64+x86 и ставит в каждую
+      # PyQt5(+PyQt6) и весь стек — десятки минут
+      - run: python -m dist_tools.offline_bundle.build_bundle --out build/offline --installer dist/install.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: signals-offline
+          path: build/signals-offline.zip
+
+  release:
+    needs: [build-online, build-offline]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { name: signals-online, path: artifacts }
+      - uses: actions/download-artifact@v4
+        with: { name: signals-offline, path: artifacts }
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/signals-online.zip
+            artifacts/signals-offline.zip
+          draft: true
+          generate_release_notes: true

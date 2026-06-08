@@ -10,6 +10,7 @@ import logging
 import sys
 from pathlib import Path
 
+from signals import qtcompat             # noqa: F401 — подмена PyQt6→PyQt5 на старых системах, должна идти первой
 from PyQt6.QtWidgets import QApplication
 
 from signals.plugins import discover
