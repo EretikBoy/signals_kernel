@@ -46,6 +46,11 @@ BASE_PACKAGES = [
 QT5_PACKAGES = ["PyQt5==5.15.10"]
 QT6_PACKAGES = ["PyQt6>=6.5"]
 
+#: psutil (тянется транзитивно из tm_devices) с версии 7.1.2 перестал публиковать
+#: колёса под win32 — только sdist, а у embeddable Python нет Python.h для сборки;
+#: 7.1.1 — последняя версия с готовым cp37-abi3-win32 колесом (подходит и для 3.8)
+WIN32_CONSTRAINTS = ["psutil<=7.1.1"]
+
 
 def _python_version_for(arch: str) -> str:
     return PYTHON_VERSION_AMD64 if arch == "amd64" else PYTHON_VERSION_WIN32
@@ -114,6 +119,8 @@ def _install_packages(python_exe: Path, arch: str) -> None:
     packages = list(BASE_PACKAGES) + list(QT5_PACKAGES)
     if arch == "amd64":
         packages += QT6_PACKAGES   # PyQt6 не публикует колёса под win32
+    else:
+        packages += WIN32_CONSTRAINTS
     qt_label = "PyQt5+PyQt6" if arch == "amd64" else "только PyQt5 (нет колёс PyQt6 под win32)"
     print(f"  [3/3] Установка библиотек ({len(packages)} пакетов, {qt_label})")
     # --no-build-isolation: у embeddable Python ._pth игнорирует PYTHONPATH, из-за
